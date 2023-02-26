@@ -1,77 +1,70 @@
 #include <stdio.h>
 #include <stdlib.h>
-#include <curl/curl.h>
 #include <string.h>
 #include <time.h>
-#include <jansson.h>
+#include <math.h>
 
-#define API_URL "http://api.aladhan.com/v1/timingsByCity?city=Fes&country=Morocco&method=2"
+#define PI 3.14159265358979323846
+#define DEG_TO_RAD(deg) (deg * (PI / 180.0))
+#define RAD_TO_DEG(rad) (rad * (180.0 / PI))
+#define J2000 2451545.0
+#define JULIAN_CENTURY(jd) ((jd - J2000) / 36525.0)
+#define SUN_ALTITUDE -0.833333333333333
 
-// Callback function for libcurl
-size_t write_callback(char *ptr, size_t size, size_t nmemb, void *userdata) {
-    size_t realsize = size * nmemb;
-    char *response = (char *)userdata;
-    strncat(response, ptr, realsize);
-    return realsize;
+struct Coordinates {
+    double latitude;
+    double longitude;
+};
+
+struct Time {
+    int year;
+    int month;
+    int day;
+    int hour;
+    int minute;
+    int second;
+};
+
+struct PrayerTimes {
+    struct Time fajr;
+    struct Time sunrise;
+    struct Time dhuhr;
+    struct Time asr;
+    struct Time maghrib;
+    struct Time isha;
+};
+
+double get_julian_date(int year, int month, int day, int hour, int minute, int second) {
+    int a = (14 - month) / 12;
+    int y = year + 4800 - a;
+    int m = month + 12 * a - 3;
+    int jdn = day + (153 * m + 2) / 5 + 365 * y + y / 4 - y / 100 + y / 400 - 32045;
+    double jd = jdn + (hour - 12) / 24.0 + minute / 1440.0 + second / 86400.0;
+    return jd;
 }
 
-int main() {
-    CURL *curl;
-    CURLcode res;
-    char response[4096] = "";
-    json_t *root;
-    json_error_t error;
-    struct tm prayer_times;
-    time_t time;
-    
-    // Initialize libcurl
-    curl = curl_easy_init();
-    if (!curl) {
-        printf("Error initializing libcurl.\n");
-        return 1;
-    }
-    
-    // Set the API endpoint
-    curl_easy_setopt(curl, CURLOPT_URL, API_URL);
-    
-    // Set the callback function to receive the response
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA, (void *)response);
-    
-    // Perform the API request
-    res = curl_easy_perform(curl);
-    if (res != CURLE_OK) {
-        printf("Error fetching data from API: %s\n", curl_easy_strerror(res));
-        return 1;
-    }
-    
-    // Clean up libcurl
-    curl_easy_cleanup(curl);
-    
-    // Parse the JSON response
-    root = json_loads(response, 0, &error);
-    if (!root) {
-        printf("Error parsing JSON response: %s\n", error.text);
-        return 1;
-    }
-    
-    // Extract the prayer times from the response
-    json_t *timings = json_object_get(root, "data");
-    timings = json_object_get(timings, "timings");
-    
-    // Convert the prayer times to struct tm
-    const char *prayer_names[] = {"Fajr", "Sunrise", "Dhuhr", "Asr", "Maghrib", "Isha"};
-    for (int i = 0; i < 6; i++) {
-        json_t *prayer_time = json_object_get(timings, prayer_names[i]);
-        strptime(json_string_value(prayer_time), "%I:%M %p", &prayer_times);
-        time = mktime(&prayer_times);
-        printf("%s: %s", prayer_names[i], asctime(localtime(&time)));
-    }
-    
-    // Clean up json-c
-    json_decref(root);
-    
-    return 0;
+double get_sun_declination(double julian_century) {
+    double a = DEG_TO_RAD(23.439291);
+    double b = DEG_TO_RAD(0.0000004);
+    double c = DEG_TO_RAD(0.0000004);
+    double d = DEG_TO_RAD(-0.0000006);
+    double e = DEG_TO_RAD(0.0000005);
+    double obliquity = a - (b * julian_century) - (c * pow(julian_century, 2)) - (d * pow(julian_century, 3)) + (e * pow(julian_century, 4));
+    double declination = asin(sin(obliquity) * sin(DEG_TO_RAD(0.0)));
+    return declination;
 }
 
-/*This program uses the libcurl library to fetch the prayer times from the Aladhan API, and the json-c library to parse the JSON response. It then converts the prayer times to struct tm objects using the strptime() function, and then to time_t objects using the mktime() function. Finally, it displays the prayer times using the asctime() function. You can compile and run this program to see the prayer times for today. */
+double get_hour_angle(double latitude, double declination, double altitude) {
+    double cosha = (sin(DEG_TO_RAD(altitude)) - (sin(DEG_TO_RAD(latitude)) * sin(declination))) / (cos(DEG_TO_RAD(latitude)) * cos(declination));
+    double ha = RAD_TO_DEG(acos(cosha));
+    return ha;
+}
+
+struct Time get_prayer_time(double julian_date, double latitude, double longitude, double timezone, double altitude, double ha) {
+    double time_correction = longitude / 15.0;
+    double local_time = (12.0 - time_correction) + (ha / 15.0);
+    double utc_time = local_time - (timezone);
+    double prayer_time = utc_time + (double) (J2000 - julian_date) / 36525.0;
+    int year, month, day, hour, minute, second;
+    double jd = J2000 + (prayer_time * 36525
+
